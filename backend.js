@@ -179,143 +179,216 @@ app.get('/protected', requireAuthN, (req, res) => {
 // });
 
 const hardCodedData = {
-    resources: {
-        testresource: {
-            DB: "My PGSQL Database ",
-            Location: "Italy, Rome",
-            Flavor: "2xLarge"
-        }
+  resources: {
+    testresource: {
+      DB: "My PGSQL Database ",
+      Location: "Italy, Rome",
+      Flavor: "2xLarge"
     }
+  }
 }
 
-function parseJwt (token) {
-    return JSON.parse(Buffer.from(token.split('.')[1], 'base64').toString());
-}
 
 let PAT = ''
 
+function isTokenLocallyValid(token) {
+  try {
+    return getParsedJwt(token).exp > Date.now() / 1000
+  }
+  catch {
+    return false
+  }
+}
+
 async function getPat() {
+  if (isTokenLocallyValid(PAT)) {
+    return PAT
+  }
+  else {
     var data = `grant_type=client_credentials&client_id=${config.auth_service.client_id}&client_secret=${config.auth_service.client_secret}`
 
     var axiosconfig = {
-        method: 'post',
-        url: `${config.auth_service.issuer}/protocol/openid-connect/token`,
-        headers: { 
-            'Content-Type': 'application/x-www-form-urlencoded'
-        },
-        data : data
-    }
-    await axios(axiosconfig)
-    .then((res) => {
-        PAT = res.data.access_token
-    })
-}
-
-async function getResourceId(resource_name){
-    var axiosconfig = {
-        method: 'get',
-        url: `${config.auth_service.issuer}/authz/protection/resource_set?name=${resource_name}&exactName=true`,
-        headers: { 
-          'Authorization': `Bearer ${PAT}`
-        },
-    };
-
-    return axios(axiosconfig)
-    .then((res) => {
-        return res.data[0]
-    }).catch(err =>{
-        console.log(err);
-    })
-}
-
-async function requestTicket(resource_name){
-
-    resource_id = await getResourceId(resource_name)
-
-    var data = JSON.stringify([
-        {
-          "resource_id": `${resource_id}`,
-          "resource_scopes": [
-            "testscope"
-          ]
-        }
-      ]);
-      
-      var axiosconfig = {
-        method: 'post',
-        url: `${config.auth_service.issuer}/authz/protection/permission`,
-        headers: { 
-          'Content-Type': 'application/json', 
-          'Authorization': `Bearer ${PAT}`
-        },
-        data : data
-      };
-      
-      return axios(axiosconfig)
-      .then(function (response) {
-        return response.data.ticket
-      })
-      /*.catch(function (error) {
-          console.log(error);
-      });*/
-
-}
-
-async function authorizeToken(token, resource_name) {
-
-    await getPat()
-    ticket = await requestTicket(resource_name)
-
-    var data = `grant_type=urn:ietf:params:oauth:grant-type:uma-ticket&submit_request=true&ticket=${ticket}`;
-    
-    var axiosconfig = {
       method: 'post',
       url: `${config.auth_service.issuer}/protocol/openid-connect/token`,
-      headers: { 
-        'Content-Type': 'application/x-www-form-urlencoded', 
-        'Authorization': `Bearer ${token}`
+      headers: {
+        'Content-Type': 'application/x-www-form-urlencoded'
       },
-      data : data
-    };
-    
-    return axios(axiosconfig)
+      data: data
+    }
+    return await axios(axiosconfig)
+      .then((res) => {
+        PAT = res.data.access_token
+        return PAT
+      }).catch(err => {
+        console.log(err)
+      })
+  }
+}
+
+async function getResourceId(resource_name) {
+  var axiosconfig = {
+    method: 'get',
+    url: `${config.auth_service.issuer}/authz/protection/resource_set?name=${resource_name}&exactName=true`,
+    headers: {
+      'Authorization': `Bearer ${await getPat()}`
+    },
+  };
+
+
+  return axios(axiosconfig)
+    .then((res) => {
+      return res.data[0]
+    }).catch(err => {
+      console.log(err);
+    })
+}
+
+async function requestTicket(requestedResources) {
+
+
+  //let resource_id = await getResourceId(resource_name)
+
+  let data = []
+
+  resourceIdPromises = requestedResources.map(x => getResourceId(x.resource_name))
+
+  await Promise.all(resourceIdPromises).then(values => {
+    for (let i = 0; i < values.length; i++) {
+      data.push({resource_id: values[i], resource_scopes: requestedResources[i].resource_scopes});
+    }
+  })
+
+  var axiosconfig = {
+    method: 'post',
+    url: `${config.auth_service.issuer}/authz/protection/permission`,
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${await getPat()}`
+    },
+    data: data
+  };
+
+  return axios(axiosconfig)
+    .then(function (response) {
+      return response.data.ticket
+    })
+    .catch(err => {
+      console.log(err)
+    })
+
+}
+
+async function authorizeToken(token, resource_name, scopes) {
+
+
+  // TODO: MAKE THE FUNCTION ABLE TO UPGRADE EXISTING RPTs
+  requestedResources = [
+    {
+      resource_name: resource_name,
+      resource_scopes: scopes
+    }
+  ]
+  if (getParsedJwt(token).authorization) {
+    getParsedJwt(token).authorization.permissions.forEach(permission => {
+      requestedResources.push({ resource_name: permission.rsname, resource_scopes: [] })
+    })
+  }
+  ticket = await requestTicket(requestedResources)
+
+  var data = `grant_type=urn:ietf:params:oauth:grant-type:uma-ticket&submit_request=true&ticket=${ticket}`;
+
+  var axiosconfig = {
+    method: 'post',
+    url: `${config.auth_service.issuer}/protocol/openid-connect/token`,
+    headers: {
+      'Content-Type': 'application/x-www-form-urlencoded',
+      'Authorization': `Bearer ${token}`
+    },
+    data: data
+  };
+
+  return axios(axiosconfig)
     .then(function (response) {
       return response.data
     })
-    /*.catch(function (error) {
-      console.log(error);
-    });*/
-    
+  .catch(function (error) {
+    console.log(error);
+  });
 
-    
+
+
 }
 
 app.get('/resources/*', (req, res) => {
-    requested_resource = req.url.split('/').pop()
-    access_token = req.headers.authorization.split(" ").pop()
-    introspection = client.introspect(access_token)
+  requested_resource = req.params[0]
+  access_token = req.headers.authorization.split(" ").pop()
+  if (req.query.scopes) {
+    scopes = req.query.scopes.split(",")
+  } else {
+    scopes = []
+  }
+  introspection = client.introspect(access_token)
     .then((res2) => {
-        if (res2.active == true) {
-            if (parseJwt(access_token).authorization) {
-                data = hardCodedData.resources[requested_resource]
-                res.json({ requested_resource: requested_resource, data: data})
-            }
-            else {
-                authorizeToken(access_token, requested_resource).then((res3) => {
-                    res.json(res3)
-                }).catch(err => {
-                    res.status(err.response.status).json(err.response.data)
-                })
-            }
+      if (res2.active == true) {
+        if (getParsedJwt(access_token).authorization && getParsedJwt(access_token).authorization.permissions.find(element => element.rsname == requested_resource)) {
+          data = hardCodedData.resources[requested_resource]
+          res.json({ requested_resource: requested_resource, data: data })
         }
         else {
-            res.status(401).json({error: "Token is inactive"})
+          authorizeToken(access_token, requested_resource, scopes).then((res3) => {
+            res.json(res3)
+          }).catch(err => {
+            res.status(err.response.status).json(err.response.data)
+          })
         }
+      }
+      else {
+        res.status(401).json({ error: "Token is inactive" })
+      }
     }).catch(err => {
-        console.log(err)
-        res.status(500).json({error: "Instrospection failed"})
+      console.log(err)
+      res.status(500).json({ error: "Instrospection failed" })
     });
-  })
+})
+
+app.post('/resources/*', (req, res) => {
+  requested_resource = req.url.split('/').pop()
+  access_token = req.headers.authorization.split(" ").pop()
+  introspection = client.introspect(access_token)
+    .then((res2) => {
+      if (res2.active == true) {
+        getPat().then(() => {
+          var data = {
+            owner: req.body.owner,
+            name: req.body.name,
+            resource_scopes: req.body.resource_scopes
+          };
+
+          var axiosconfig = {
+            method: 'post',
+            url: `${config.auth_service.issuer}/authz/protection/resource_set/`,
+            headers: {
+              'Content-Type': 'application/json',
+              'Authorization': `Bearer ${PAT}`
+            },
+            data: data
+          };
+
+          axios(axiosconfig)
+            .then(function (response) {
+              res.json({ result: "created" })
+              hardCodedData[requested_resource] = req.body.data
+            })
+        })
+      }
+      else {
+        res.status(401).json({ error: "Token is incative" })
+      }
+    }).catch(err => {
+      console.log(err)
+      res.status(500).json({ error: "Instrospection failed" })
+    });
+})
 
 app.listen(config.backend.port, () => {
   console.log(`Example app listening at ${config.backend.url}`)
