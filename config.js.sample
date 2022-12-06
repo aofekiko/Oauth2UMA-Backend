@@ -1,0 +1,21 @@
+var config = module.exports = {};
+
+config.frontend = {
+    port: 8081,
+    host: 'localhost',
+}
+
+config.frontend.url = `http://${config.frontend.host}:${config.frontend.port}`
+
+config.backend = {
+    port: 8082,
+    host: 'localhost',
+}
+
+config.backend.url = `http://${config.backend.host}:${config.backend.port}`
+
+config.auth_service = {
+    issuer: 'http://localhost:8080/realms/test',
+    client_id: '****',
+    client_secret: '****'
+}
